@@ -4,6 +4,17 @@ declare(strict_types=1);
 
 namespace App\Http\Payloads\Auth;
 
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'RegisterRequest',
+    required: ['name', 'email', 'password'],
+    properties: [
+        new OA\Property(property: 'name', type: 'string', maxLength: 255),
+        new OA\Property(property: 'email', type: 'string', format: 'email', maxLength: 255),
+        new OA\Property(property: 'password', type: 'string', format: 'password', minLength: 8),
+    ]
+)]
 final class RegisterPayload
 {
     public function __construct(

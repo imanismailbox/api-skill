@@ -27,6 +27,7 @@ app/
           StoreController.php
           UpdateController.php
           DestroyController.php
+          BatchDestroyController.php
     Middleware/
       ForceJsonResponse.php
       Sunset.php
@@ -92,6 +93,112 @@ tests/
 
 ---
 
+## Complete Worked Example — Listing Posts (Dedicated Query Definition)
+
+### Query Definition
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Query\Definitions;
+
+use App\Models\Post;
+use App\Query\Attributes\QueryDefinition;
+
+#[QueryDefinition(
+    paginatePerpage: 15,
+    allowFilter: ['status', 'user_id'],
+    allowSort: ['created_at', 'title'],
+    defaultSort: '-created_at',
+    searchable: ['title', 'content']
+)]
+final class PostQueryDefinition extends BaseQueryDefinition
+{
+    public static function model(): string
+    {
+        return Post::class;
+    }
+}
+```
+
+### API Resource
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Resources;
+
+use App\Models\Post;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+use OpenApi\Attributes as OA;
+
+/** @mixin Post */
+#[OA\Schema(
+    schema: 'Post',
+    required: ['id', 'title', 'content'],
+    properties: [
+        new OA\Property(property: 'id', type: 'string', format: 'ulid'),
+        new OA\Property(property: 'title', type: 'string'),
+        new OA\Property(property: 'content', type: 'string'),
+        new OA\Property(property: 'created_at', type: 'string', format: 'date-time'),
+    ]
+)]
+final class PostResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'title' => $this->title,
+            'content' => $this->content,
+            'created_at' => $this->created_at?->toIso8601String(),
+        ];
+    }
+}
+```
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Attributes\QueryParameters;
+use App\Concerns\HandlesApiRequest;
+use App\Http\Resources\PostResource;
+use App\Query\Definitions\PostQueryDefinition;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
+
+final class IndexController
+{
+    use HandlesApiRequest;
+
+    protected string $resource = PostResource::class;
+
+    #[QueryParameters(
+        path: '/v1/posts',
+        operationId: 'postsIndex',
+        summary: 'List posts',
+        definition: PostQueryDefinition::class,
+    )]
+    public function __invoke(Request $request): Response
+    {
+        return $this->handleIndex(PostQueryDefinition::class, $request);
+    }
+}
+```
+
+---
+
 ## Route Files
 
 ### `routes/api/routes.php`
@@ -148,6 +255,7 @@ Route::prefix('v1/posts')->middleware(['auth:sanctum', 'throttle:api'])->group(f
     Route::get('/{post}', Posts\V1\ShowController::class)->name('v1:show');
     Route::put('/{post}', Posts\V1\UpdateController::class)->name('v1:update');
     Route::delete('/{post}', Posts\V1\DestroyController::class)->name('v1:destroy');
+    Route::delete('/', Posts\V1\BatchDestroyController::class)->name('v1:batch-destroy');
 });
 ```
 
@@ -201,6 +309,16 @@ declare(strict_types=1);
 
 namespace App\Http\Payloads\Posts;
 
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'PostStoreRequest',
+    required: ['title', 'content'],
+    properties: [
+        new OA\Property(property: 'title', type: 'string', maxLength: 255),
+        new OA\Property(property: 'content', type: 'string'),
+    ]
+)]
 final class StorePayload
 {
     public function __construct(
@@ -301,6 +419,7 @@ use App\Actions\Posts\StorePostAction;
 use App\Http\Requests\Posts\V1\StoreRequest;
 use App\Http\Resources\PostResource;
 use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
 use Symfony\Component\HttpFoundation\Response;
 
 final class StoreController
@@ -309,6 +428,22 @@ final class StoreController
         private readonly StorePostAction $action,
     ) {}
 
+    #[OA\Post(
+        path: '/v1/posts',
+        operationId: 'postsStore',
+        summary: 'Create post',
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(ref: '#/components/schemas/PostStoreRequest')
+        ),
+        responses: [
+            new OA\Response(
+                response: 201,
+                description: 'Post created',
+                content: new OA\JsonContent(ref: '#/components/schemas/Post')
+            )
+        ]
+    )]
     public function __invoke(StoreRequest $request): JsonResponse
     {
         $post = $this->action->handle(
@@ -811,7 +946,7 @@ Quick reference for what to avoid and why:
 | Anti-pattern | Correct approach |
 |---|---|
 | `$table->id()` on API models | `$table->ulid('id')->primary()` + `HasUlids` trait |
-| Business logic in models | Move to an Action class under `app/Actions/` |
+| Business logic or API documentation in models | Move to an Action class under `app/Actions/`, Resources, and Payloads |
 | Resourceful or multi-method controllers | One `final` invokable controller per operation |
 | Returning `$model->toArray()` or raw `array` from a controller | Return an API Resource |
 | `app(Foo::class)` or `resolve(Foo::class)` inside a method | Declare `private readonly Foo $foo` in the constructor |
@@ -822,6 +957,303 @@ Quick reference for what to avoid and why:
 | A PHP file without `declare(strict_types=1)` | First statement after `<?php`, always |
 | `if/elseif` chains selecting a single value | `match` expression |
 | Policy or gate checks inside an Action | Authorize in `FormRequest::authorize()` only |
+
+---
+
+## Batch Operations — Batch Action Pattern
+
+Pola ini mengikuti standar inti `api-skill` dengan memisahkan tanggung jawab ke Request, Payload, dan Action.
+
+### Payload
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Payloads\Posts;
+
+final class BatchDestroyPayload
+{
+    /**
+     * @param array<int, string> $ids
+     */
+    public function __construct(
+        public readonly array $ids,
+    ) {}
+}
+```
+
+### Form Request
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Requests\Posts\V1;
+
+use App\Http\Payloads\Posts\BatchDestroyPayload;
+use Illuminate\Foundation\Http\FormRequest;
+
+final class BatchDestroyRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return true;
+    }
+
+    public function rules(): array
+    {
+        return [
+            'ids' => ['required', 'array', 'min:1'],
+            'ids.*' => ['required', 'exists:posts,id'],
+        ];
+    }
+
+    public function payload(): BatchDestroyPayload
+    {
+        return new BatchDestroyPayload(
+            ids: $this->array(key: 'ids'),
+        );
+    }
+}
+```
+
+### Action
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Actions\Posts;
+
+use App\Http\Payloads\Posts\BatchDestroyPayload;
+use App\Models\Post;
+use App\Models\User;
+use Illuminate\Database\DatabaseManager;
+
+final class BatchDestroyAction
+{
+    public function __construct(
+        private readonly DatabaseManager $database,
+    ) {}
+
+    /**
+     * @return array<int, string>
+     */
+    public function handle(BatchDestroyPayload $payload, User $user): array
+    {
+        return $this->database->transaction(callback: function () use ($payload, $user): array {
+            $deletedIds = [];
+
+            $query = Post::query()->whereIn(column: 'id', values: $payload->ids);
+
+            // Scoping Tenancy
+            if ($user->company_id) {
+                $query->where(column: 'company_id', operator: '=', value: $user->company_id);
+            }
+
+            $query->get()->each(callback: function (Post $post) use (&$deletedIds): void {
+                if ($post->delete()) {
+                    $deletedIds[] = $post->id;
+                }
+            });
+
+            return $deletedIds;
+        });
+    }
+}
+```
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Actions\Posts\BatchDestroyAction;
+use App\Http\Requests\Posts\V1\BatchDestroyRequest;
+use App\Models\User;
+use Illuminate\Http\JsonResponse;
+use Symfony\Component\HttpFoundation\Response;
+
+final class BatchDestroyController
+{
+    public function __construct(
+        private readonly BatchDestroyAction $action,
+    ) {}
+
+    public function __invoke(BatchDestroyRequest $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $deletedIds = $this->action->handle(
+            payload: $request->payload(),
+            user: $user,
+        );
+
+        return new JsonResponse(
+            data: [
+                'deleted_ids' => $deletedIds,
+            ],
+            status: Response::HTTP_OK,
+        );
+    }
+}
+```
+
+---
+
+## Media Management — HandlesMediaUpload Trait
+
+### Trait Implementation
+
+`app/Concerns/HandlesMediaUpload.php` — standardizes media uploads using Spatie Media Library with automated resizing and metadata handling.
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Concerns;
+
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Http\UploadedFile;
+use Illuminate\Support\Arr;
+use Illuminate\Support\Facades\Log;
+use Spatie\Image\Image;
+use Spatie\MediaLibrary\MediaCollections\Models\Media;
+use Throwable;
+
+trait HandlesMediaUpload
+{
+    protected function handleSingleMediaUpload(
+        Model $model,
+        ?UploadedFile $file,
+        string $collectionName,
+        ?array $captions = [],
+        ?string $disk = null,
+        ?array $resizeConfig = null,
+    ): ?Media {
+        if (! $file instanceof UploadedFile) {
+            return null;
+        }
+
+        $this->removeOldMedia(model: $model, collectionName: $collectionName);
+
+        $mediaAdder = $model->addMedia($file);
+        $mediaAdder->withCustomProperties($captions ?? []);
+
+        $media = $disk !== null
+            ? $mediaAdder->toMediaCollection(collectionName: $collectionName, diskName: $disk)
+            : $mediaAdder->toMediaCollection(collectionName: $collectionName);
+
+        $width = $resizeConfig['width'] ?? null;
+        $height = $resizeConfig['height'] ?? null;
+
+        if ($media instanceof Media && ($width !== null || $height !== null) && str_starts_with(haystack: $media->mime_type ?? '', needle: 'image/')) {
+            $this->replaceOriginalWithResizedImage(media: $media, width: $width, height: $height);
+        }
+
+        return $media;
+    }
+
+    protected function handleMultipleMediaUpload(
+        Model $model,
+        array $files,
+        string $collectionName,
+        ?array $captions = [],
+        ?string $disk = null,
+        ?array $resizeConfig = null,
+    ): array {
+        $uploadedMedia = [];
+
+        foreach ($files as $index => $file) {
+            if (! $file instanceof UploadedFile) {
+                continue;
+            }
+
+            $caption = $captions[$index] ?? null;
+            $mediaAdder = $model->addMedia($file);
+            $mediaAdder->withCustomProperties(['caption' => $caption]);
+
+            $media = $disk !== null
+                ? $mediaAdder->toMediaCollection(collectionName: $collectionName, diskName: $disk)
+                : $mediaAdder->toMediaCollection(collectionName: $collectionName);
+
+            $width = $resizeConfig['width'] ?? null;
+            $height = $resizeConfig['height'] ?? null;
+
+            if ($media instanceof Media && ($width !== null || $height !== null) && str_starts_with(haystack: $media->mime_type ?? '', needle: 'image/')) {
+                $this->replaceOriginalWithResizedImage(media: $media, width: $width, height: $height);
+            }
+
+            $uploadedMedia[] = $media;
+        }
+
+        return $uploadedMedia;
+    }
+
+    protected function replaceOriginalWithResizedImage(Media $media, ?int $width = null, ?int $height = null): void
+    {
+        if ($width === null && $height === null) {
+            return;
+        }
+
+        try {
+            $imageProcessor = Image::load($media->getPath());
+
+            match (true) {
+                $width !== null && $height !== null => $imageProcessor->resize(width: $width, height: $height),
+                $width !== null => $imageProcessor->width(width: $width),
+                $height !== null => $imageProcessor->height(height: $height),
+                default => null,
+            };
+
+            $imageProcessor->save();
+        } catch (Throwable $e) {
+            Log::error(message: "Failed to resize and replace media ID {$media->id}: {$e->getMessage()}");
+        }
+    }
+
+    protected function removeOldMedia(Model $model, string $collectionName): void
+    {
+        $model->clearMediaCollection(collectionName: $collectionName);
+    }
+}
+```
+
+### Action Usage (Multiple Files)
+
+```php
+final class StoreGalleryAction
+{
+    use HandlesMediaUpload;
+
+    public function handle(GalleryPayload $payload): Gallery
+    {
+        $gallery = Gallery::query()->create($payload->toArray());
+
+        if (! empty($payload->images)) {
+            $this->handleMultipleMediaUpload(
+                model: $gallery,
+                files: $payload->images,
+                collectionName: 'galleries',
+                captions: $payload->captions,
+                resizeConfig: ['width' => 1200],
+            );
+        }
+
+        return $gallery;
+    }
+}
+```
 
 ---
 

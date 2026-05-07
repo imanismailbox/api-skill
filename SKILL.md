@@ -61,6 +61,7 @@ Route::prefix('v1/posts')->middleware(['auth:sanctum', 'throttle:api'])->group(f
     Route::get('/{post}', Posts\V1\ShowController::class)->name('v1:show');
     Route::put('/{post}', Posts\V1\UpdateController::class)->name('v1:update');
     Route::delete('/{post}', Posts\V1\DestroyController::class)->name('v1:destroy');
+    Route::delete('/', Posts\V1\BatchDestroyController::class)->name('v1:batch-destroy');
 });
 ```
 
@@ -83,6 +84,7 @@ app/Http/Controllers/Posts/V1/
   StoreController.php
   UpdateController.php
   DestroyController.php
+  BatchDestroyController.php
 ```
 
 Dependencies are always injected via the constructor. Never use Facades, `app()`, or `resolve()` inside a controller. The `__invoke` method handles the request and returns a response:
@@ -164,7 +166,7 @@ final class StoreRequest extends FormRequest
 }
 ```
 
-**Payloads (DTOs)** are plain PHP objects. They have a typed constructor and a `toArray()` method that returns what Eloquent expects. They live in `app/Http/Payloads/`:
+**Payloads (DTOs)** are plain PHP objects. They have a typed constructor and a `toArray()` method that returns what Eloquent expects. They live in `app/Http/Payloads/`. Payloads also serve as the **Single Source of Truth for request body documentation** using OpenAPI attributes:
 
 ```php
 <?php
@@ -173,12 +175,22 @@ declare(strict_types=1);
 
 namespace App\Http\Payloads\Posts;
 
-final class StorePayload
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'PostStoreRequest',
+    required: ['title', 'content'],
+    properties: [
+        new OA\Property(property: 'title', type: 'string', maxLength: 255),
+        new OA\Property(property: 'content', type: 'string'),
+    ]
+)]
+final readonly class StorePayload
 {
     public function __construct(
-        public readonly string $title,
-        public readonly string $content,
-        public readonly string $userId,
+        public string $title,
+        public string $content,
+        public string $userId,
     ) {}
 
     public function toArray(): array
@@ -202,7 +214,44 @@ Always use Laravel's Eloquent API Resources to transform model data. Generate th
 php artisan make:resource PostResource --json-api
 ```
 
-Resources live under `app/Http/Resources/`. They define the contract for what consumers receive. Never return raw models or plain arrays from a controller.
+Resources live under `app/Http/Resources/`. They define the contract for what consumers receive and serve as the **Single Source of Truth for output documentation**:
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Resources;
+
+use App\Models\Post;
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+use OpenApi\Attributes as OA;
+
+/** @mixin Post */
+#[OA\Schema(
+    schema: 'Post',
+    required: ['id', 'title', 'content'],
+    properties: [
+        new OA\Property(property: 'id', type: 'string', format: 'ulid'),
+        new OA\Property(property: 'title', type: 'string'),
+        new OA\Property(property: 'content', type: 'string'),
+        new OA\Property(property: 'created_at', type: 'string', format: 'date-time'),
+    ]
+)]
+final class PostResource extends JsonResource
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'id' => $this->id,
+            'title' => $this->title,
+            'content' => $this->content,
+            'created_at' => $this->created_at?->toIso8601String(),
+        ];
+    }
+}
+```
 
 Call `JsonResource::withoutWrapping()` in `AppServiceProvider::boot()` to disable the automatic `data` envelope globally. This ensures resources serialise consistently whether returned directly from a controller or encoded inside a `JsonResponse`:
 
@@ -462,9 +511,39 @@ RateLimiter::for('api', function (Request $request): Limit {
 
 ---
 
-## 14. Query Filtering — Spatie Laravel Query Builder
+## 14. Query Filtering — Dedicated Query Definitions
 
-Use [Spatie Laravel Query Builder](https://github.com/spatie/laravel-query-builder) for all filterable list endpoints. Never build raw query strings manually:
+Use dedicated **Query Definition** classes and `#[QueryParameters]` for all list and searchable endpoints. This keeps model classes clean and automates Swagger documentation.
+
+Definitions live under `app/Query/Definitions/`:
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Query\Definitions;
+
+use App\Models\Post;
+use App\Query\Attributes\QueryDefinition;
+
+#[QueryDefinition(
+    paginatePerpage: 15,
+    allowFilter: ['status', 'author_id'],
+    allowSort: ['created_at', 'title'],
+    defaultSort: '-created_at',
+    searchable: ['title', 'content']
+)]
+final class PostQueryDefinition extends BaseQueryDefinition
+{
+    public static function model(): string
+    {
+        return Post::class;
+    }
+}
+```
+
+Controllers use the `HandlesApiRequest` trait and the `#[QueryParameters]` attribute for zero-effort documentation:
 
 ```php
 <?php
@@ -473,25 +552,28 @@ declare(strict_types=1);
 
 namespace App\Http\Controllers\Posts\V1;
 
+use App\Attributes\QueryParameters;
+use App\Concerns\HandlesApiRequest;
 use App\Http\Resources\PostResource;
-use App\Models\Post;
-use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
-use Spatie\QueryBuilder\AllowedFilter;
-use Spatie\QueryBuilder\QueryBuilder;
+use App\Query\Definitions\PostQueryDefinition;
+use Illuminate\Http\Request;
+use Symfony\Component\HttpFoundation\Response;
 
 final class IndexController
 {
-    public function __invoke(): AnonymousResourceCollection
-    {
-        $posts = QueryBuilder::for(Post::class)
-            ->allowedFilters([
-                AllowedFilter::exact('status'),
-                AllowedFilter::partial('title'),
-            ])
-            ->allowedSorts(['created_at', 'title'])
-            ->simplePaginate(perPage: 15);
+    use HandlesApiRequest;
 
-        return PostResource::collection($posts);
+    protected string $resource = PostResource::class;
+
+    #[QueryParameters(
+        path: '/v1/posts',
+        operationId: 'postsIndex',
+        summary: 'List posts',
+        definition: PostQueryDefinition::class,
+    )]
+    public function __invoke(Request $request): Response
+    {
+        return $this->handleIndex(PostQueryDefinition::class, $request);
     }
 }
 ```
@@ -774,7 +856,7 @@ The following are explicitly prohibited. If you find yourself reaching for any o
 | Anti-pattern | Why | What to do instead |
 |---|---|---|
 | Auto-increment integer primary keys | Exposes record counts, enables enumeration | Use `HasUlids` (section 20) |
-| Business logic in models (scopes excluded) | Violates single responsibility, untestable in isolation | Use Actions (section 9) |
+| Business logic or API documentation in models | Violates SoC, leaks schema, harder to maintain | Use Actions (9), Resources (4), and Payloads (3) |
 | Multi-method or resourceful controllers | Obscures intent, harder to locate logic | Single-action invokable controllers (section 2) |
 | Returning raw models or arrays from controllers | Leaks schema, no transformation layer | Always use API Resources (section 4) |
 | `app()`, `resolve()`, or Facades in controllers/actions | Hides dependencies, harder to test | Constructor injection (section 11) |
@@ -784,6 +866,72 @@ The following are explicitly prohibited. If you find yourself reaching for any o
 | HTML error responses on API routes | Breaks every API client | `ForceJsonResponse` + full exception handler (sections 6, 17) |
 | Skipping `declare(strict_types=1)` | Silent type coercion bugs | Required on every file (section 19) |
 | Authorization checks in Actions | Actions receive already-authorized data | Authorize in Form Request `authorize()` (section 8) |
+
+---
+
+## 23. Batch Operations (Bulk Deletion)
+
+Untuk penghapusan beberapa sumber daya sekaligus melalui satu endpoint, gunakan **Batch Action Pattern**. Pola ini memisahkan logika validasi ke Form Request, transfer data ke Payload (DTO), dan eksekusi penghapusan ke Action class.
+
+- **Request & Payload:** Gunakan Form Request untuk memvalidasi daftar ID dan memetakannya ke Payload.
+- **Action Scoping:** Pastikan Action melakukan scoping multi-tenancy (misal: `company_id`) sebelum eksekusi.
+- **Atomicity:** Gunakan `$this->database->transaction()` di dalam Action untuk memastikan integritas data.
+
+#### Example Flow:
+1. `BatchDestroyRequest` memvalidasi input `{ "ids": [...] }`.
+2. `BatchDestroyAction` menerima `BatchDestroyPayload` dan melakukan penghapusan ter-scope.
+3. `BatchDestroyController` (Invokable) mengembalikan daftar ID yang berhasil dihapus.
+
+---
+
+## 24. Media Management (Spatie Media Library)
+
+Gunakan pola `HandlesMediaUpload` untuk mengelola unggahan media secara konsisten melalui API, termasuk penanganan resizing dan metadata.
+
+- **Type Safety:** Selalu validasi bahwa input adalah instance dari `UploadedFile`.
+- **Image Processing:** Gunakan `Spatie\Image\Image` untuk resizing otomatis setelah upload.
+- **Custom Properties:** Simpan metadata seperti `caption` di dalam `withCustomProperties`.
+- **Code Style:** Gunakan `match` untuk pemilihan operasi resize dan *named arguments* untuk pemanggilan API Spatie.
+
+#### Example Usage in Model:
+```php
+final class Post extends Model implements HasMedia
+{
+    use InteractsWithMedia;
+    use HasUlids;
+
+    public function registerMediaCollections(): void
+    {
+        $this->addMediaCollection('images')
+            ->useDisk('public')
+            ->singleFile();
+    }
+}
+```
+
+#### Example Usage in Action/Controller:
+```php
+final class StorePostAction
+{
+    use HandlesMediaUpload;
+
+    public function handle(StorePayload $payload): Post
+    {
+        $post = Post::query()->create($payload->toArray());
+
+        if ($payload->image) {
+            $this->handleSingleMediaUpload(
+                model: $post,
+                file: $payload->image,
+                collectionName: 'images',
+                resizeConfig: ['width' => 800],
+            );
+        }
+
+        return $post;
+    }
+}
+```
 
 ---
 

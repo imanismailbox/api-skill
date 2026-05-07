@@ -4,6 +4,16 @@ declare(strict_types=1);
 
 namespace App\Http\Payloads\Posts;
 
+use OpenApi\Attributes as OA;
+
+#[OA\Schema(
+    schema: 'PostStoreRequest',
+    required: ['title', 'content'],
+    properties: [
+        new OA\Property(property: 'title', type: 'string', maxLength: 255),
+        new OA\Property(property: 'content', type: 'string'),
+    ]
+)]
 final class StorePayload
 {
     public function __construct(
