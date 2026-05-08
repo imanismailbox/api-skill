@@ -100,6 +100,7 @@ use App\Actions\Posts\StorePostAction;
 use App\Http\Requests\Posts\V1\StoreRequest;
 use App\Http\Resources\PostResource;
 use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
 use Symfony\Component\HttpFoundation\Response;
 
 final class StoreController
@@ -108,6 +109,27 @@ final class StoreController
         private readonly StorePostAction $action,
     ) {}
 
+    #[OA\Post(
+        path: '/v1/posts',
+        operationId: 'postsStore',
+        summary: 'Create post',
+        requestBody: new OA\RequestBody(
+            required: true,
+            content: new OA\JsonContent(ref: '#/components/schemas/PostStoreRequest')
+        ),
+        responses: [
+            new OA\Response(
+                response: 201,
+                description: 'Post created',
+                content: new OA\JsonContent(properties: [
+                    new OA\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\Property(property: 'data', ref: '#/components/schemas/Post'),
+                ])
+            ),
+            new OA\Response(response: 401, description: 'Unauthorized', content: new OA\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
     public function __invoke(StoreRequest $request): JsonResponse
     {
         $post = $this->action->handle(
@@ -115,7 +137,11 @@ final class StoreController
         );
 
         return new JsonResponse(
-            data: new PostResource($post),
+            data: [
+                'status' => true,
+                'message' => 'Success',
+                'data' => new PostResource($post),
+            ],
             status: Response::HTTP_CREATED,
         );
     }
@@ -532,7 +558,8 @@ use App\Query\Attributes\QueryDefinition;
     allowFilter: ['status', 'author_id'],
     allowSort: ['created_at', 'title'],
     defaultSort: '-created_at',
-    searchable: ['title', 'content']
+    searchable: ['title', 'content'],
+    allowInclude: ['author', 'comments']
 )]
 final class PostQueryDefinition extends BaseQueryDefinition
 {
@@ -543,42 +570,35 @@ final class PostQueryDefinition extends BaseQueryDefinition
 }
 ```
 
-Controllers use the `HandlesApiRequest` trait and the `#[QueryParameters]` attribute for zero-effort documentation:
+Controllers use the `HandlesApiRequest` trait and the `#[QueryParameters]` attribute for zero-effort documentation on **list endpoints (Index)**:
 
 ```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Controllers\Posts\V1;
-
-use App\Attributes\QueryParameters;
-use App\Concerns\HandlesApiRequest;
-use App\Http\Resources\PostResource;
-use App\Query\Definitions\PostQueryDefinition;
-use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
-
-final class IndexController
+#[QueryParameters(
+    path: '/v1/posts',
+    operationId: 'postsIndex',
+    summary: 'List posts',
+    tags: ['Posts'],
+    security: [['sanctum' => []]],
+    responses: [
+        new OA\Response(
+            response: 200,
+            description: 'Posts retrieved',
+            content: new OA\JsonContent(properties: [
+                new OA\Property(property: 'status', type: 'boolean', example: true),
+                new OA\Property(property: 'message', type: 'string', example: 'Success'),
+                new OA\Property(property: 'data', type: 'array', items: new OA\Items(ref: '#/components/schemas/Post')),
+            ])
+        ),
+        new OA\Response(response: 401, description: 'Unauthorized', content: new OA\JsonContent(ref: '#/components/schemas/Message')),
+    ],
+    definition: PostQueryDefinition::class,
+)]
+public function __invoke(Request $request): Response
 {
-    use HandlesApiRequest;
-
-    protected string $resource = PostResource::class;
-
-    #[QueryParameters(
-        path: '/v1/posts',
-        operationId: 'postsIndex',
-        summary: 'List posts',
-        definition: PostQueryDefinition::class,
-    )]
-    public function __invoke(Request $request): Response
-    {
-        return $this->handleIndex(PostQueryDefinition::class, $request);
-    }
+    return $this->handleIndex(PostQueryDefinition::class, $request);
 }
 ```
 
----
 
 ## 15. Testing
 
@@ -880,8 +900,58 @@ Untuk penghapusan beberapa sumber daya sekaligus melalui satu endpoint, gunakan 
 #### Example Flow:
 1. `BatchDestroyRequest` memvalidasi input `{ "ids": [...] }`.
 2. `BatchDestroyAction` menerima `BatchDestroyPayload` dan melakukan penghapusan ter-scope.
-3. `BatchDestroyController` (Invokable) mengembalikan daftar ID yang berhasil dihapus.
+3. `BatchDestroyController` (Invokable) menggunakan standard OpenAPI documentation:
 
+```php
+#[OA\Delete(
+    path: '/v1/posts',
+    operationId: 'postsBatchDestroy',
+    summary: 'Batch delete posts',
+    tags: ['Posts'],
+    security: [['sanctum' => []]],
+    requestBody: new OA\RequestBody(
+        required: true,
+        content: new OA\JsonContent(
+            required: ['ids'],
+            properties: [
+                new OA\Property(property: 'ids', type: 'array', items: new OA\Items(type: 'string', format: 'ulid')),
+            ]
+        )
+    ),
+    responses: [
+        new OA\Response(
+            response: 200,
+            description: 'Posts deleted',
+            content: new OA\JsonContent(properties: [
+                new OA\Property(property: 'status', type: 'boolean', example: true),
+                new OA\Property(property: 'message', type: 'string', example: 'Success'),
+                new OA\Property(property: 'data', properties: [
+                    new OA\Property(property: 'deleted_ids', type: 'array', items: new OA\Items(type: 'string', format: 'ulid')),
+                ]),
+            ])
+        ),
+        new OA\Response(response: 401, description: 'Unauthorized', content: new OA\JsonContent(ref: '#/components/schemas/Message')),
+    ]
+)]
+public function __invoke(BatchDestroyRequest $request): JsonResponse
+{
+    $deletedIds = $this->action->handle(
+        payload: $request->payload(),
+        user: $request->user(),
+    );
+
+    return new JsonResponse(
+        data: [
+            'status' => true,
+            'message' => 'Success',
+            'data' => [
+                'deleted_ids' => $deletedIds,
+            ],
+        ],
+        status: Response::HTTP_OK,
+    );
+}
+```
 ---
 
 ## 24. Media Management (Spatie Media Library)

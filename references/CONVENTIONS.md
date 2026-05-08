@@ -93,7 +93,7 @@ tests/
 
 ---
 
-## Complete Worked Example — Listing Posts (Dedicated Query Definition)
+## Complete Worked Example — Listing Posts (Index)
 
 ### Query Definition
 
@@ -176,6 +176,7 @@ use App\Concerns\HandlesApiRequest;
 use App\Http\Resources\PostResource;
 use App\Query\Definitions\PostQueryDefinition;
 use Illuminate\Http\Request;
+use OpenApi\Attributes as OA;
 use Symfony\Component\HttpFoundation\Response;
 
 final class IndexController
@@ -188,11 +189,429 @@ final class IndexController
         path: '/v1/posts',
         operationId: 'postsIndex',
         summary: 'List posts',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        responses: [
+            new OA\\Response(
+                response: 200,
+                description: 'Posts retrieved',
+                content: new OA\\JsonContent(properties: [
+                    new OA\\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\\Property(property: 'data', type: 'array', items: new OA\\Items(ref: '#/components/schemas/Post')),
+                ])
+            ),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ],
         definition: PostQueryDefinition::class,
     )]
     public function __invoke(Request $request): Response
     {
         return $this->handleIndex(PostQueryDefinition::class, $request);
+    }
+}
+```
+
+---
+
+## Complete Worked Example — Showing a Post (Detail)
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Http\Resources\PostResource;
+use App\Models\Post;
+use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
+use Symfony\Component\HttpFoundation\Response;
+
+final class ShowController
+{
+    #[OA\\Get(
+        path: '/v1/posts/{post}',
+        operationId: 'postsShow',
+        summary: 'Show post',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        parameters: [
+            new OA\\PathParameter(name: 'post', required: true, schema: new OA\\Schema(type: 'string', format: 'ulid')),
+        ],
+        responses: [
+            new OA\\Response(
+                response: 200,
+                description: 'Post retrieved',
+                content: new OA\\JsonContent(properties: [
+                    new OA\\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\\Property(property: 'data', ref: '#/components/schemas/Post'),
+                ])
+            ),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+            new OA\\Response(response: 404, description: 'Post not found', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
+    public function __invoke(Post $post): JsonResponse
+    {
+        return new JsonResponse(
+            data: [
+                'status' => true,
+                'message' => 'Success',
+                'data' => new PostResource($post),
+            ],
+            status: Response::HTTP_OK,
+        );
+    }
+}
+```
+
+---
+
+## Complete Worked Example — Storing a Post (Create)
+
+### Payload
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Payloads\Posts;
+
+use OpenApi\Attributes as OA;
+
+#[OA\\Schema(
+    schema: 'PostStoreRequest',
+    required: ['title', 'content'],
+    properties: [
+        new OA\\Property(property: 'title', type: 'string', maxLength: 255),
+        new OA\\Property(property: 'content', type: 'string'),
+    ]
+)]
+final class StorePayload
+{
+    public function __construct(
+        public readonly string $title,
+        public readonly string $content,
+        public readonly string $userId,
+    ) {}
+
+    public function toArray(): array
+    {
+        return [
+            'title'   => $this->title,
+            'content' => $this->content,
+            'user_id' => $this->userId,
+        ];
+    }
+}
+```
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Actions\Posts\StorePostAction;
+use App\Http\Requests\Posts\V1\StoreRequest;
+use App\Http\Resources\PostResource;
+use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
+use Symfony\Component\HttpFoundation\Response;
+
+final class StoreController
+{
+    public function __construct(
+        private readonly StorePostAction $action,
+    ) {}
+
+    #[OA\\Post(
+        path: '/v1/posts',
+        operationId: 'postsStore',
+        summary: 'Create post',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        requestBody: new OA\\RequestBody(
+            required: true,
+            content: new OA\\JsonContent(ref: '#/components/schemas/PostStoreRequest')
+        ),
+        responses: [
+            new OA\\Response(
+                response: 201,
+                description: 'Post created',
+                content: new OA\\JsonContent(properties: [
+                    new OA\\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\\Property(property: 'data', ref: '#/components/schemas/Post'),
+                ])
+            ),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+            new OA\\Response(response: 422, description: 'Validation error', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
+    public function __invoke(StoreRequest $request): JsonResponse
+    {
+        $post = $this->action->handle(
+            payload: $request->payload(),
+        );
+
+        return new JsonResponse(
+            data: [
+                'status' => true,
+                'message' => 'Success',
+                'data' => new PostResource($post),
+            ],
+            status: Response::HTTP_CREATED,
+        );
+    }
+}
+```
+
+---
+
+## Complete Worked Example — Updating a Post (Update)
+
+### Payload
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Payloads\Posts;
+
+use OpenApi\Attributes as OA;
+
+#[OA\\Schema(
+    schema: 'PostUpdateRequest',
+    properties: [
+        new OA\\Property(property: 'title', type: 'string', maxLength: 255),
+        new OA\\Property(property: 'content', type: 'string'),
+    ]
+)]
+final class UpdatePayload
+{
+    public function __construct(
+        public readonly ?string $title = null,
+        public readonly ?string $content = null,
+    ) {}
+
+    public function toArray(): array
+    {
+        return array_filter([
+            'title'   => $this->title,
+            'content' => $this->content,
+        ]);
+    }
+}
+```
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Actions\Posts\UpdatePostAction;
+use App\Http\Requests\Posts\V1\UpdateRequest;
+use App\Http\Resources\PostResource;
+use App\Models\Post;
+use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
+use Symfony\Component\HttpFoundation\Response;
+
+final class UpdateController
+{
+    public function __construct(
+        private readonly UpdatePostAction $action,
+    ) {}
+
+    #[OA\\Put(
+        path: '/v1/posts/{post}',
+        operationId: 'postsUpdate',
+        summary: 'Update post',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        parameters: [
+            new OA\\PathParameter(name: 'post', required: true, schema: new OA\\Schema(type: 'string', format: 'ulid')),
+        ],
+        requestBody: new OA\\RequestBody(
+            required: true,
+            content: new OA\\JsonContent(ref: '#/components/schemas/PostUpdateRequest')
+        ),
+        responses: [
+            new OA\\Response(
+                response: 200,
+                description: 'Post updated',
+                content: new OA\\JsonContent(properties: [
+                    new OA\\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\\Property(property: 'data', ref: '#/components/schemas/Post'),
+                ])
+            ),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+            new OA\\Response(response: 404, description: 'Post not found', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+            new OA\\Response(response: 422, description: 'Validation error', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
+    public function __invoke(Post $post, UpdateRequest $request): JsonResponse
+    {
+        $post = $this->action->handle(
+            post: $post,
+            payload: $request->payload(),
+        );
+
+        return new JsonResponse(
+            data: [
+                'status' => true,
+                'message' => 'Success',
+                'data' => new PostResource($post),
+            ],
+            status: Response::HTTP_OK,
+        );
+    }
+}
+```
+
+---
+
+## Complete Worked Example — Deleting a Post (Delete)
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Actions\Posts\DestroyPostAction;
+use App\Models\Post;
+use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
+use Symfony\Component\HttpFoundation\Response;
+
+final class DestroyController
+{
+    public function __construct(
+        private readonly DestroyPostAction $action,
+    ) {}
+
+    #[OA\\Delete(
+        path: '/v1/posts/{post}',
+        operationId: 'postsDestroy',
+        summary: 'Delete post',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        parameters: [
+            new OA\\PathParameter(name: 'post', required: true, schema: new OA\\Schema(type: 'string', format: 'ulid')),
+        ],
+        responses: [
+            new OA\\Response(response: 204, description: 'Post deleted successfully'),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+            new OA\\Response(response: 404, description: 'Post not found', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
+    public function __invoke(Post $post): JsonResponse
+    {
+        $this->action->handle(post: $post);
+
+        return new JsonResponse(
+            status: Response::HTTP_NO_CONTENT,
+        );
+    }
+}
+```
+
+---
+
+## Complete Worked Example — Batch Deleting Posts (Batch Delete)
+
+### Controller
+
+```php
+<?php
+
+declare(strict_types=1);
+
+namespace App\Http\Controllers\Posts\V1;
+
+use App\Actions\Posts\BatchDestroyAction;
+use App\Http\Requests\Posts\V1\BatchDestroyRequest;
+use App\Models\User;
+use Illuminate\Http\JsonResponse;
+use OpenApi\Attributes as OA;
+use Symfony\Component\HttpFoundation\Response;
+
+final class BatchDestroyController
+{
+    public function __construct(
+        private readonly BatchDestroyAction $action,
+    ) {}
+
+    #[OA\\Delete(
+        path: '/v1/posts',
+        operationId: 'postsBatchDestroy',
+        summary: 'Batch delete posts',
+        tags: ['Posts'],
+        security: [['sanctum' => []]],
+        requestBody: new OA\\RequestBody(
+            required: true,
+            content: new OA\\JsonContent(
+                required: ['ids'],
+                properties: [
+                    new OA\\Property(property: 'ids', type: 'array', items: new OA\\Items(type: 'string', format: 'ulid')),
+                ]
+            )
+        ),
+        responses: [
+            new OA\\Response(
+                response: 200,
+                description: 'Posts deleted',
+                content: new OA\\JsonContent(properties: [
+                    new OA\\Property(property: 'status', type: 'boolean', example: true),
+                    new OA\\Property(property: 'message', type: 'string', example: 'Success'),
+                    new OA\\Property(property: 'data', properties: [
+                        new OA\\Property(property: 'deleted_ids', type: 'array', items: new OA\\Items(type: 'string', format: 'ulid')),
+                    ]),
+                ])
+            ),
+            new OA\\Response(response: 401, description: 'Unauthorized', content: new OA\\JsonContent(ref: '#/components/schemas/Message')),
+        ]
+    )]
+    public function __invoke(BatchDestroyRequest $request): JsonResponse
+    {
+        /** @var User $user */
+        $user = $request->user();
+
+        $deletedIds = $this->action->handle(
+            payload: $request->payload(),
+            user: $user,
+        );
+
+        return new JsonResponse(
+            data: [
+                'status' => true,
+                'message' => 'Success',
+                'data' => [
+                    'deleted_ids' => $deletedIds,
+                ],
+            ],
+            status: Response::HTTP_OK,
+        );
     }
 }
 ```
@@ -230,32 +649,12 @@ use App\Http\Controllers\Auth;
 use Illuminate\Support\Facades\Route;
 
 Route::prefix('v1/auth')->middleware('throttle:api')->group(function (): void {
-    Route::post('/register', Auth\V1\RegisterController::class)->name('v1:register');
-    Route::post('/login', Auth\V1\LoginController::class)->name('v1:login');
+    Route::post('/register', Auth\\V1\\RegisterController::class)->name('v1:register');
+    Route::post('/login', Auth\\V1\\LoginController::class)->name('v1:login');
 
     Route::middleware('auth:sanctum')->group(function (): void {
-        Route::delete('/logout', Auth\V1\LogoutController::class)->name('v1:logout');
+        Route::delete('/logout', Auth\\V1\\LogoutController::class)->name('v1:logout');
     });
-});
-```
-
-### `routes/api/posts.php`
-
-```php
-<?php
-
-declare(strict_types=1);
-
-use App\Http\Controllers\Posts;
-use Illuminate\Support\Facades\Route;
-
-Route::prefix('v1/posts')->middleware(['auth:sanctum', 'throttle:api'])->group(function (): void {
-    Route::get('/', Posts\V1\IndexController::class)->name('v1:index');
-    Route::post('/', Posts\V1\StoreController::class)->name('v1:store');
-    Route::get('/{post}', Posts\V1\ShowController::class)->name('v1:show');
-    Route::put('/{post}', Posts\V1\UpdateController::class)->name('v1:update');
-    Route::delete('/{post}', Posts\V1\DestroyController::class)->name('v1:destroy');
-    Route::delete('/', Posts\V1\BatchDestroyController::class)->name('v1:batch-destroy');
 });
 ```
 
@@ -295,378 +694,6 @@ $table->ulid('id')->primary();
 ```
 
 Never use `$table->id()` (auto-increment) on a model that is exposed through an API endpoint.
-
----
-
-## Complete Worked Example — Storing a Post
-
-### Payload
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Payloads\Posts;
-
-use OpenApi\Attributes as OA;
-
-#[OA\Schema(
-    schema: 'PostStoreRequest',
-    required: ['title', 'content'],
-    properties: [
-        new OA\Property(property: 'title', type: 'string', maxLength: 255),
-        new OA\Property(property: 'content', type: 'string'),
-    ]
-)]
-final class StorePayload
-{
-    public function __construct(
-        public readonly string $title,
-        public readonly string $content,
-        public readonly string $userId,
-    ) {}
-
-    public function toArray(): array
-    {
-        return [
-            'title'   => $this->title,
-            'content' => $this->content,
-            'user_id' => $this->userId,
-        ];
-    }
-}
-```
-
-### Form Request
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Requests\Posts\V1;
-
-use App\Http\Payloads\Posts\StorePayload;
-use Illuminate\Foundation\Http\FormRequest;
-
-final class StoreRequest extends FormRequest
-{
-    public function authorize(): bool
-    {
-        return true;
-    }
-
-    public function rules(): array
-    {
-        return [
-            'title'   => ['required', 'string', 'max:255'],
-            'content' => ['required', 'string'],
-        ];
-    }
-
-    public function payload(): StorePayload
-    {
-        return new StorePayload(
-            title:   $this->string('title')->toString(),
-            content: $this->string('content')->toString(),
-            userId:  $this->user()->id,
-        );
-    }
-}
-```
-
-### Action
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Actions\Posts;
-
-use App\Http\Payloads\Posts\StorePayload;
-use App\Models\Post;
-use Illuminate\Database\DatabaseManager;
-
-final class StorePostAction
-{
-    public function __construct(
-        private readonly DatabaseManager $database,
-    ) {}
-
-    public function handle(StorePayload $payload): Post
-    {
-        return $this->database->transaction(
-            callback: fn (): Post => Post::query()->create(
-                attributes: $payload->toArray(),
-            ),
-        );
-    }
-}
-```
-
-### Controller
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Controllers\Posts\V1;
-
-use App\Actions\Posts\StorePostAction;
-use App\Http\Requests\Posts\V1\StoreRequest;
-use App\Http\Resources\PostResource;
-use Illuminate\Http\JsonResponse;
-use OpenApi\Attributes as OA;
-use Symfony\Component\HttpFoundation\Response;
-
-final class StoreController
-{
-    public function __construct(
-        private readonly StorePostAction $action,
-    ) {}
-
-    #[OA\Post(
-        path: '/v1/posts',
-        operationId: 'postsStore',
-        summary: 'Create post',
-        requestBody: new OA\RequestBody(
-            required: true,
-            content: new OA\JsonContent(ref: '#/components/schemas/PostStoreRequest')
-        ),
-        responses: [
-            new OA\Response(
-                response: 201,
-                description: 'Post created',
-                content: new OA\JsonContent(ref: '#/components/schemas/Post')
-            )
-        ]
-    )]
-    public function __invoke(StoreRequest $request): JsonResponse
-    {
-        $post = $this->action->handle(
-            payload: $request->payload(),
-        );
-
-        return new JsonResponse(
-            data: new PostResource($post),
-            status: Response::HTTP_CREATED,
-        );
-    }
-}
-```
-
----
-
-## Complete Worked Example — Deleting a Post (Background Job)
-
-### Action
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Actions\Posts;
-
-use App\Jobs\Posts\DestroyPostJob;
-use App\Models\Post;
-
-final class DestroyPostAction
-{
-    public function handle(Post $post): void
-    {
-        dispatch(new DestroyPostJob($post));
-    }
-}
-```
-
-### Job
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Jobs\Posts;
-
-use App\Models\Post;
-use Illuminate\Contracts\Queue\ShouldQueue;
-use Illuminate\Database\DatabaseManager;
-use Illuminate\Foundation\Queue\Queueable;
-use Illuminate\Queue\SerializesModels;
-
-final class DestroyPostJob implements ShouldQueue
-{
-    use Queueable;
-    use SerializesModels;
-
-    public function __construct(
-        private Post $post, // not readonly — SerializesModels rehydrates via __wakeup()
-    ) {}
-
-    public function handle(DatabaseManager $database): void
-    {
-        $database->transaction(
-            callback: fn (): bool => $this->post->delete(),
-        );
-    }
-}
-```
-
-### Controller
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Controllers\Posts\V1;
-
-use App\Actions\Posts\DestroyPostAction;
-use App\Models\Post;
-use Illuminate\Http\JsonResponse;
-use Symfony\Component\HttpFoundation\Response;
-
-final class DestroyController
-{
-    public function __construct(
-        private readonly DestroyPostAction $action,
-    ) {}
-
-    public function __invoke(Post $post): JsonResponse
-    {
-        $this->action->handle(post: $post);
-
-        return new JsonResponse(
-            status: Response::HTTP_ACCEPTED,
-        );
-    }
-}
-```
-
----
-
-## Complete Worked Example — Registration (Synchronous)
-
-Registration is always synchronous. The user needs a token immediately.
-
-The `RegisterUserPayload::toArray()` returns the password as plain text. This is safe because the `User` model must cast the `password` attribute to `hashed`, which Laravel (12+) handles automatically on assignment:
-
-```php
-// app/Models/User.php
-protected function casts(): array
-{
-    return [
-        'password' => 'hashed',
-    ];
-}
-```
-
-Without this cast, the password will be stored unhashed. Never rely on the action to hash it manually.
-
-### Payload
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Payloads\Auth;
-
-final class RegisterUserPayload
-{
-    public function __construct(
-        public readonly string $name,
-        public readonly string $email,
-        public readonly string $password,
-    ) {}
-
-    public function toArray(): array
-    {
-        return [
-            'name'     => $this->name,
-            'email'    => $this->email,
-            'password' => $this->password,
-        ];
-    }
-}
-```
-
-### Action
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Actions\Auth;
-
-use App\Http\Payloads\Auth\RegisterUserPayload;
-use App\Models\User;
-use Illuminate\Database\DatabaseManager;
-
-final class RegisterUserAction
-{
-    public function __construct(
-        private readonly DatabaseManager $database,
-    ) {}
-
-    public function handle(RegisterUserPayload $payload): array
-    {
-        return $this->database->transaction(function () use ($payload): array {
-            $user = User::query()->create($payload->toArray());
-
-            $token = $user->createToken(name: 'api')->plainTextToken;
-
-            return compact('user', 'token');
-        });
-    }
-}
-```
-
-### Controller
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Controllers\Auth\V1;
-
-use App\Actions\Auth\RegisterUserAction;
-use App\Http\Requests\Auth\V1\RegisterRequest;
-use App\Http\Resources\UserResource;
-use Illuminate\Http\JsonResponse;
-use Symfony\Component\HttpFoundation\Response;
-
-final class RegisterController
-{
-    public function __construct(
-        private readonly RegisterUserAction $action,
-    ) {}
-
-    public function __invoke(RegisterRequest $request): JsonResponse
-    {
-        [
-            'user' => $user,
-            'token' => $token,
-        ] = $this->action->handle(
-            payload: $request->payload(),
-        );
-
-        return new JsonResponse(
-            data: [
-                'user'  => new UserResource($user),
-                'token' => $token,
-            ],
-            status: Response::HTTP_CREATED,
-        );
-    }
-}
-```
 
 ---
 
@@ -720,12 +747,12 @@ Register this in `bootstrap/app.php`. Every exception handler closure returns a 
 
 ```php
 use App\Http\Responses\ProblemResponse;
-use Illuminate\Auth\Access\AuthorizationException;
-use Illuminate\Auth\AuthenticationException;
-use Illuminate\Database\Eloquent\ModelNotFoundException;
-use Illuminate\Http\Request;
-use Illuminate\Validation\ValidationException;
-use Symfony\Component\HttpFoundation\Response;
+use Illuminate\\Auth\\Access\\AuthorizationException;
+use Illuminate\\Auth\\AuthenticationException;
+use Illuminate\\Database\\Eloquent\\ModelNotFoundException;
+use Illuminate\\Http\\Request;
+use Illuminate\\Validation\\ValidationException;
+use Symfony\\Component\\HttpFoundation\\Response;
 
 ->withExceptions(function (Exceptions $exceptions): void {
     $exceptions->render(function (ValidationException $e, Request $request): ProblemResponse {
@@ -765,7 +792,7 @@ use Symfony\Component\HttpFoundation\Response;
         );
     });
 
-    $exceptions->render(function (\Throwable $e, Request $request): ProblemResponse {
+    $exceptions->render(function (\\\\Throwable $e, Request $request): ProblemResponse {
         return new ProblemResponse(
             type:   'https://example.com/problems/server-error',
             title:  'Server Error',
@@ -783,11 +810,11 @@ use Symfony\Component\HttpFoundation\Response;
 Both the rate limiter and the resource wrapping setting belong in `AppServiceProvider::boot()`:
 
 ```php
-use Illuminate\Cache\RateLimiting\Limit;
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Http\Request;
-use Illuminate\Http\Resources\Json\JsonResource;
-use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\\Cache\\RateLimiting\\Limit;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Http\\Request;
+use Illuminate\\Http\Resources\\Json\\JsonResource;
+use Illuminate\\Support\\Facades\\RateLimiter;
 
 public function boot(): void
 {
@@ -821,8 +848,8 @@ namespace App\Http\Middleware;
 use Closure;
 use DateTimeImmutable;
 use DateTimeInterface;
-use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
+use Illuminate\\Http\\Request;
+use Symfony\\Component\\HttpFoundation\\Response;
 
 final class Sunset
 {
@@ -845,7 +872,7 @@ Register the alias in `bootstrap/app.php`:
 ```php
 ->withMiddleware(function (Middleware $middleware): void {
     $middleware->alias([
-        'sunset' => \App\Http\Middleware\Sunset::class,
+        'sunset' => \\App\\Http\\Middleware\\Sunset::class,
     ]);
 })
 ```
@@ -858,14 +885,14 @@ Apply to a versioned route group when a deprecation date is known. Both versions
 Route::prefix('v1/posts')
     ->middleware(['auth:sanctum', 'throttle:api', 'sunset:2026-12-31'])
     ->group(function (): void {
-        Route::get('/', Posts\V1\IndexController::class)->name('v1:index');
+        Route::get('/', Posts\\V1\\IndexController::class)->name('v1:index');
         // ...
     });
 
 Route::prefix('v2/posts')
     ->middleware(['auth:sanctum', 'throttle:api'])
     ->group(function (): void {
-        Route::get('/', Posts\V2\IndexController::class)->name('v2:index');
+        Route::get('/', Posts\\V2\\IndexController::class)->name('v2:index');
         // ...
     });
 ```
@@ -886,8 +913,8 @@ declare(strict_types=1);
 namespace App\Http\Middleware;
 
 use Closure;
-use Illuminate\Http\Request;
-use Symfony\Component\HttpFoundation\Response;
+use Illuminate\\Http\\Request;
+use Symfony\\Component\\HttpFoundation\\Response;
 
 final class ForceJsonResponse
 {
@@ -960,156 +987,6 @@ Quick reference for what to avoid and why:
 
 ---
 
-## Batch Operations — Batch Action Pattern
-
-Pola ini mengikuti standar inti `api-skill` dengan memisahkan tanggung jawab ke Request, Payload, dan Action.
-
-### Payload
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Payloads\Posts;
-
-final class BatchDestroyPayload
-{
-    /**
-     * @param array<int, string> $ids
-     */
-    public function __construct(
-        public readonly array $ids,
-    ) {}
-}
-```
-
-### Form Request
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Requests\Posts\V1;
-
-use App\Http\Payloads\Posts\BatchDestroyPayload;
-use Illuminate\Foundation\Http\FormRequest;
-
-final class BatchDestroyRequest extends FormRequest
-{
-    public function authorize(): bool
-    {
-        return true;
-    }
-
-    public function rules(): array
-    {
-        return [
-            'ids' => ['required', 'array', 'min:1'],
-            'ids.*' => ['required', 'exists:posts,id'],
-        ];
-    }
-
-    public function payload(): BatchDestroyPayload
-    {
-        return new BatchDestroyPayload(
-            ids: $this->array(key: 'ids'),
-        );
-    }
-}
-```
-
-### Action
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Actions\Posts;
-
-use App\Http\Payloads\Posts\BatchDestroyPayload;
-use App\Models\Post;
-use App\Models\User;
-use Illuminate\Database\DatabaseManager;
-
-final class BatchDestroyAction
-{
-    public function __construct(
-        private readonly DatabaseManager $database,
-    ) {}
-
-    /**
-     * @return array<int, string>
-     */
-    public function handle(BatchDestroyPayload $payload, User $user): array
-    {
-        return $this->database->transaction(callback: function () use ($payload, $user): array {
-            $deletedIds = [];
-
-            $query = Post::query()->whereIn(column: 'id', values: $payload->ids);
-
-            // Scoping Tenancy
-            if ($user->company_id) {
-                $query->where(column: 'company_id', operator: '=', value: $user->company_id);
-            }
-
-            $query->get()->each(callback: function (Post $post) use (&$deletedIds): void {
-                if ($post->delete()) {
-                    $deletedIds[] = $post->id;
-                }
-            });
-
-            return $deletedIds;
-        });
-    }
-}
-```
-
-### Controller
-
-```php
-<?php
-
-declare(strict_types=1);
-
-namespace App\Http\Controllers\Posts\V1;
-
-use App\Actions\Posts\BatchDestroyAction;
-use App\Http\Requests\Posts\V1\BatchDestroyRequest;
-use App\Models\User;
-use Illuminate\Http\JsonResponse;
-use Symfony\Component\HttpFoundation\Response;
-
-final class BatchDestroyController
-{
-    public function __construct(
-        private readonly BatchDestroyAction $action,
-    ) {}
-
-    public function __invoke(BatchDestroyRequest $request): JsonResponse
-    {
-        /** @var User $user */
-        $user = $request->user();
-
-        $deletedIds = $this->action->handle(
-            payload: $request->payload(),
-            user: $user,
-        );
-
-        return new JsonResponse(
-            data: [
-                'deleted_ids' => $deletedIds,
-            ],
-            status: Response::HTTP_OK,
-        );
-    }
-}
-```
-
----
-
 ## Media Management — HandlesMediaUpload Trait
 
 ### Trait Implementation
@@ -1123,12 +1000,12 @@ declare(strict_types=1);
 
 namespace App\Concerns;
 
-use Illuminate\Database\Eloquent\Model;
-use Illuminate\Http\UploadedFile;
-use Illuminate\Support\Arr;
-use Illuminate\Support\Facades\Log;
-use Spatie\Image\Image;
-use Spatie\MediaLibrary\MediaCollections\Models\Media;
+use Illuminate\\Database\\Eloquent\\Model;
+use Illuminate\\Http\\UploadedFile;
+use Illuminate\\Support\\Arr;
+use Illuminate\\Support\\Facades\\Log;
+use Spatie\\Image\\Image;
+use Spatie\\MediaLibrary\\MediaCollections\\Models\\Media;
 use Throwable;
 
 trait HandlesMediaUpload
@@ -1278,7 +1155,8 @@ it('stores a post and returns 201', function (): void {
             'content' => 'Body text.',
         ])
         ->assertStatus(Response::HTTP_CREATED)
-        ->assertJsonPath('title', 'Hello World');
+        ->assertJsonPath('status', true)
+        ->assertJsonPath('data.title', 'Hello World');
 });
 
 it('returns problem details when title is missing', function (): void {
